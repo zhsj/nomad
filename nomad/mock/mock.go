@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/structs"
 	psstructs "github.com/hashicorp/nomad/plugins/shared/structs"
@@ -668,6 +669,46 @@ func ConnectNativeJob(mode string) *structs.Job {
 	return job
 }
 
+func ConnectIngressGatewayJob(mode string) *structs.Job {
+	job := Job()
+	tg := job.TaskGroups[0]
+	tg.Networks = []*structs.NetworkResource{{
+		Mode: mode,
+	}}
+	tg.Services = []*structs.Service{{
+		Name:      "my-ingress-service",
+		PortLabel: "9999",
+		Connect: &structs.ConsulConnect{
+			Gateway: &structs.ConsulGateway{
+				Proxy: &structs.ConsulGatewayProxy{
+					ConnectTimeout: helper.TimeToPtr(3 * time.Second),
+				},
+				Ingress: &structs.ConsulIngressConfigEntry{
+					Listeners: []*structs.ConsulIngressListener{{
+						Port:     2000,
+						Protocol: "tcp",
+						Services: []*structs.ConsulIngressService{{
+							Name: "service1",
+						}},
+					}},
+				},
+			},
+		},
+	}}
+	tg.Tasks = []*structs.Task{{ // normally injected
+		Name:          fmt.Sprintf("%s-%s", structs.ConnectIngressPrefix, "my-ingress-service"),
+		Kind:          structs.NewTaskKind(structs.ConnectIngressPrefix, "my-ingress-service"),
+		Driver:        "docker",
+		Config:        make(map[string]interface{}),
+		ShutdownDelay: 5 * time.Second,
+		LogConfig: &structs.LogConfig{
+			MaxFiles:      2,
+			MaxFileSizeMB: 2,
+		},
+	}}
+	return job
+}
+
 func BatchJob() *structs.Job {
 	job := &structs.Job{
 		Region:      "global",
@@ -932,9 +973,20 @@ func ConnectAlloc() *structs.Allocation {
 	return alloc
 }
 
+// ConnectNativeAlloc creates an alloc with a connect native task.
 func ConnectNativeAlloc(mode string) *structs.Allocation {
 	alloc := Alloc()
 	alloc.Job = ConnectNativeJob(mode)
+	alloc.AllocatedResources.Shared.Networks = []*structs.NetworkResource{{
+		Mode: mode,
+		IP:   "10.0.0.1",
+	}}
+	return alloc
+}
+
+func ConnectIngressGatewayAlloc(mode string) *structs.Allocation {
+	alloc := Alloc()
+	alloc.Job = ConnectIngressGatewayJob(mode)
 	alloc.AllocatedResources.Shared.Networks = []*structs.NetworkResource{{
 		Mode: mode,
 		IP:   "10.0.0.1",

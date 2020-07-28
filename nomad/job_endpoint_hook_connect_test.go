@@ -110,6 +110,27 @@ func TestJobEndpointConnect_groupConnectHook(t *testing.T) {
 	require.Exactly(t, tgOut, job.TaskGroups[0])
 }
 
+func TestJobEndpointConnect_groupConnectHook_IngressGateway(t *testing.T) {
+	t.Parallel()
+
+	// Test that the connect gateway task is inserted if a gateway service exists
+	job := mock.ConnectIngressGatewayJob("bridge")
+
+	expTG := job.TaskGroups[0].Copy()
+	expTG.Tasks = []*structs.Task{
+		newConnectGatewayTask(expTG.Services[0].Name, false),
+	}
+	expTG.Tasks[0].Canonicalize(job, expTG)
+	expTG.Networks[0].Canonicalize()
+
+	require.NoError(t, groupConnectHook(job, job.TaskGroups[0]))
+	require.Exactly(t, expTG, job.TaskGroups[0])
+
+	// Test that the hook is idempotent
+	require.NoError(t, groupConnectHook(job, job.TaskGroups[0]))
+	require.Exactly(t, expTG, job.TaskGroups[0])
+}
+
 // TestJobEndpoint_ConnectInterpolation asserts that when a Connect sidecar
 // proxy task is being created for a group service with an interpolated name,
 // the service name is interpolated *before the task is created.
@@ -132,6 +153,8 @@ func TestJobEndpointConnect_ConnectInterpolation(t *testing.T) {
 }
 
 func TestJobEndpointConnect_groupConnectSidecarValidate(t *testing.T) {
+	t.Parallel()
+
 	t.Run("sidecar 0 networks", func(t *testing.T) {
 		require.EqualError(t, groupConnectSidecarValidate(&structs.TaskGroup{
 			Name:     "g1",
@@ -159,6 +182,8 @@ func TestJobEndpointConnect_groupConnectSidecarValidate(t *testing.T) {
 }
 
 func TestJobEndpointConnect_getNamedTaskForNativeService(t *testing.T) {
+	t.Parallel()
+
 	t.Run("named exists", func(t *testing.T) {
 		task, err := getNamedTaskForNativeService(&structs.TaskGroup{
 			Name:  "g1",
@@ -193,5 +218,68 @@ func TestJobEndpointConnect_getNamedTaskForNativeService(t *testing.T) {
 		}, "s1", "t3")
 		require.EqualError(t, err, "task t3 named by Consul Connect Native service g1->s1 does not exist")
 		require.Nil(t, task)
+	})
+}
+
+func TestJobEndpointConnect_groupConnectGatewayValidate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no group network", func(t *testing.T) {
+		err := groupConnectGatewayValidate(&structs.TaskGroup{
+			Name:     "g1",
+			Networks: nil,
+		})
+		require.EqualError(t, err, `Consul Connect gateways require exactly 1 network, found 0 in group "g1"`)
+	})
+
+	t.Run("bad network mode", func(t *testing.T) {
+		err := groupConnectGatewayValidate(&structs.TaskGroup{
+			Name: "g1",
+			Networks: structs.Networks{{
+				Mode: "",
+			}},
+		})
+		require.EqualError(t, err, `Consul Connect Gateway service requires Task Group with network mode of type "bridge" or "host"`)
+	})
+}
+
+func TestJobEndpointConnect_newConnectGatewayTask_host(t *testing.T) {
+	task := newConnectGatewayTask("service1", true)
+	require.Equal(t, "connect-ingress-service1", task.Name)
+	require.Equal(t, "connect-ingress:service1", string(task.Kind))
+	require.Equal(t, ">= 1.8.0", task.Constraints[0].RTarget)
+	require.Equal(t, "host", task.Config["network_mode"])
+	require.Nil(t, task.Lifecycle)
+}
+
+func TestJobEndpointConnect_newConnectGatewayTask_bridge(t *testing.T) {
+	task := newConnectGatewayTask("service1", false)
+	require.NotContains(t, task.Config, "network_mode")
+}
+
+func TestJobEndpointConnect_hasGatewayTaskForService(t *testing.T) {
+	t.Run("no gateway task", func(t *testing.T) {
+		result := hasGatewayTaskForService(&structs.TaskGroup{
+			Name: "group",
+			Tasks: []*structs.Task{{
+				Name: "task1",
+				Kind: "",
+			}},
+		}, "my-service")
+		require.False(t, result)
+	})
+
+	t.Run("has gateway task", func(t *testing.T) {
+		result := hasGatewayTaskForService(&structs.TaskGroup{
+			Name: "group",
+			Tasks: []*structs.Task{{
+				Name: "task1",
+				Kind: "",
+			}, {
+				Name: "ingress-gateway-my-service",
+				Kind: structs.NewTaskKind(structs.ConnectIngressPrefix, "my-service"),
+			}},
+		}, "my-service")
+		require.True(t, result)
 	})
 }
