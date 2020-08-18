@@ -1,6 +1,8 @@
 package e2eutil
 
 import (
+	"reflect"
+	"sort"
 	"time"
 
 	capi "github.com/hashicorp/consul/api"
@@ -40,4 +42,12 @@ func RequireConsulDeregistered(require *require.Assertions,
 		require.NoError(err, "expected no error for %q, got %v", serviceName, err)
 		return len(services) == 0
 	}, 5*time.Second, time.Second)
+}
+
+// ConsulTagsEqual returns true if the service has the expected tags. Both
+// slices are sorted before comparing.
+func ConsulTagsEqual(service *capi.CatalogService, expected []string) bool {
+	sort.Strings(expected)
+	sort.Strings(service.ServiceTags)
+	return reflect.DeepEqual(expected, service.ServiceTags)
 }
