@@ -252,8 +252,8 @@ func TestEnvoyBootstrapHook_with_SI_token(t *testing.T) {
 	t.Parallel()
 	testutil.RequireConsul(t)
 
-	testconsul := getTestConsul(t)
-	defer testconsul.Stop()
+	testConsul := getTestConsul(t)
+	defer testConsul.Stop()
 
 	alloc := mock.Alloc()
 	alloc.AllocatedResources.Shared.Networks = []*structs.NetworkResource{
@@ -292,7 +292,7 @@ func TestEnvoyBootstrapHook_with_SI_token(t *testing.T) {
 
 	// Register Group Services
 	consulConfig := consulapi.DefaultConfig()
-	consulConfig.Address = testconsul.HTTPAddr
+	consulConfig.Address = testConsul.HTTPAddr
 	consulAPIClient, err := consulapi.NewClient(consulConfig)
 	require.NoError(t, err)
 
@@ -510,7 +510,10 @@ func TestTaskRunner_EnvoyBootstrapHook_gateway_ok(t *testing.T) {
 
 	var out envoyConfig
 	require.NoError(t, json.NewDecoder(f).Decode(&out))
-	require.Equal(t, "ingress-service", out.Node.Cluster) // the only interesting thing on bootstrap
+
+	// the only interesting thing on bootstrap is the presence of the cluster,
+	// everything is configured at runtime through xDS
+	require.Equal(t, "ingress-service", out.Node.Cluster)
 }
 
 // TestTaskRunner_EnvoyBootstrapHook_Noop asserts that the Envoy bootstrap hook
@@ -557,8 +560,8 @@ func TestTaskRunner_EnvoyBootstrapHook_RecoverableError(t *testing.T) {
 	t.Parallel()
 	testutil.RequireConsul(t)
 
-	testconsul := getTestConsul(t)
-	defer testconsul.Stop()
+	testConsul := getTestConsul(t)
+	defer testConsul.Stop()
 
 	alloc := mock.Alloc()
 	alloc.AllocatedResources.Shared.Networks = []*structs.NetworkResource{
@@ -601,7 +604,7 @@ func TestTaskRunner_EnvoyBootstrapHook_RecoverableError(t *testing.T) {
 
 	// Run Connect bootstrap Hook
 	h := newEnvoyBootstrapHook(newEnvoyBootstrapHookConfig(alloc, &config.ConsulConfig{
-		Addr: testconsul.HTTPAddr,
+		Addr: testConsul.HTTPAddr,
 	}, logger))
 	req := &interfaces.TaskPrestartRequest{
 		Task:    sidecarTask,
@@ -656,5 +659,32 @@ func TestTaskRunner_EnvoyBootstrapHook_extractNameAndKind(t *testing.T) {
 			structs.TaskKind(""),
 		)
 		require.EqualError(t, err, "envoy must be used as connect sidecar or gateway")
+	})
+}
+
+func TestTaskRunner_EnvoyBootstrapHook_grpcAddress(t *testing.T) {
+	bridgeH := newEnvoyBootstrapHook(newEnvoyBootstrapHookConfig(
+		mock.ConnectIngressGatewayAlloc("bridge"),
+		new(config.ConsulConfig),
+		testlog.HCLogger(t),
+	))
+
+	hostH := newEnvoyBootstrapHook(newEnvoyBootstrapHookConfig(
+		mock.ConnectIngressGatewayAlloc("host"),
+		new(config.ConsulConfig),
+		testlog.HCLogger(t),
+	))
+
+	t.Run("environment", func(t *testing.T) {
+		env := map[string]string{
+			grpcConsulVariable: "1.2.3.4:9000",
+		}
+		require.Equal(t, "1.2.3.4:9000", bridgeH.grpcAddress(env))
+		require.Equal(t, "1.2.3.4:9000", hostH.grpcAddress(env))
+	})
+
+	t.Run("defaults", func(t *testing.T) {
+		require.Equal(t, "unix://alloc/tmp/consul_grpc.sock", bridgeH.grpcAddress(nil))
+		require.Equal(t, "127.0.0.1:8502", hostH.grpcAddress(nil))
 	})
 }

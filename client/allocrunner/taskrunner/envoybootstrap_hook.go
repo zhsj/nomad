@@ -75,6 +75,11 @@ const (
 	envoyAdminBindEnvPrefix = "NOMAD_ENVOY_ADMIN_ADDR_"
 )
 
+const (
+	grpcConsulVariable = "CONSUL_GRPC_ADDR"
+	grpcDefaultAddress = "127.0.0.1:8502"
+)
+
 // envoyBootstrapHook writes the bootstrap config for the Connect Envoy proxy
 // sidecar.
 type envoyBootstrapHook struct {
@@ -164,6 +169,8 @@ func (h *envoyBootstrapHook) Prestart(ctx context.Context, req *interfaces.TaskP
 		return err
 	}
 
+	grpcAddr := h.grpcAddress(req.TaskEnv.EnvMap)
+
 	h.logger.Debug("bootstrapping Consul "+serviceKind, "task", req.Task.Name, "service", serviceName)
 	fmt.Println("-- bootstrapping kind:", serviceKind, "task:", req.Task.Name, "service:", serviceName)
 
@@ -186,7 +193,7 @@ func (h *envoyBootstrapHook) Prestart(ctx context.Context, req *interfaces.TaskP
 	}
 	h.logger.Debug("check for SI token for task", "task", req.Task.Name, "exists", siToken != "")
 
-	bootstrap := h.newEnvoyBootstrapArgs(h.alloc.TaskGroup, service, envoyAdminBind, siToken, bootstrapFilePath)
+	bootstrap := h.newEnvoyBootstrapArgs(h.alloc.TaskGroup, service, grpcAddr, envoyAdminBind, siToken, bootstrapFilePath)
 	bootstrapArgs := bootstrap.args()
 	bootstrapEnv := bootstrap.env(os.Environ())
 
@@ -261,7 +268,8 @@ func buildEnvoyAdminBind(alloc *structs.Allocation, taskName string) string {
 			break
 		}
 	}
-	return fmt.Sprintf("localhost:%d", port)
+	// return fmt.Sprintf("localhost:%d", port)
+	return fmt.Sprintf("0.0.0.0:%d", port)
 }
 
 func (h *envoyBootstrapHook) writeConfig(filename, config string) error {
@@ -291,25 +299,45 @@ func (h *envoyBootstrapHook) execute(cmd *exec.Cmd) (string, error) {
 	return stdout.String(), nil
 }
 
-func (h *envoyBootstrapHook) newEnvoyBootstrapArgs(tgName string, svc *structs.Service, envoyAdminBind, siToken, filepath string) envoyBootstrapArgs {
+// grpcAddress determines the Consul gRPC endpoint address to use.
+//
+// In host networking this will default to 127.0.0.1:8502.
+// In bridge/cni networking this will default to unix://<socket>.
+// In either case, CONSUL_GRPC_ADDR will override the default.
+func (h *envoyBootstrapHook) grpcAddress(env map[string]string) string {
+	if address := env[grpcConsulVariable]; address != "" {
+		return address
+	}
+
+	tg := h.alloc.Job.LookupTaskGroup(h.alloc.TaskGroup)
+	switch tg.Networks[0].Mode {
+	case "host":
+		return grpcDefaultAddress
+	default:
+		return "unix://" + allocdir.AllocGRPCSocket
+	}
+}
+
+func (h *envoyBootstrapHook) newEnvoyBootstrapArgs(
+	tgName string,
+	service *structs.Service,
+	grpcAddr, envoyAdminBind, siToken, filepath string,
+) envoyBootstrapArgs {
 	var (
 		sidecarForID string // sidecar only
 		gateway      string // gateway only
 	)
 
-	if svc.Connect.HasSidecar() {
-		sidecarForID = agentconsul.MakeAllocServiceID(h.alloc.ID, "group-"+tgName, svc)
+	if service.Connect.HasSidecar() {
+		sidecarForID = agentconsul.MakeAllocServiceID(h.alloc.ID, "group-"+tgName, service)
 	}
 
-	if svc.Connect.IsGateway() {
+	if service.Connect.IsGateway() {
 		gateway = "ingress" // more types in the future
 	}
 
-	// todo(shoenig) Should connect directly to Consul if the sidecar is running on the host netns.
-	grpcAddr := "unix://" + allocdir.AllocGRPCSocket
-
 	h.logger.Debug("bootstrapping envoy",
-		"sidecar_for", svc.Name, "bootstrap_file", filepath,
+		"sidecar_for", service.Name, "bootstrap_file", filepath,
 		"sidecar_for_id", sidecarForID, "grpc_addr", grpcAddr,
 		"admin_bind", envoyAdminBind, "gateway", gateway,
 	)
